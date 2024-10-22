@@ -1,0 +1,174 @@
+# Run the container 
+docker run -v /var/run/docker.sock:/var/run/docker.sock \
+    -v $(pwd)/images:/app/images \
+    -p 54000:54000 \
+    -p 8080:8080 \
+    -p 50001:50001 \
+    -v stigman_mysql_data:/app/volumes/mysql \
+    -v stigman_keycloak_data:/app/volumes/keycloak \
+    -v stigman_api_data:/app/volumes/api \
+    --name stigman-container \
+    stigman-wrapper-persistent
+    
+    
+    
+# To manually control the service:
+bashCopy# Start the service
+sudo systemctl start stigman.service
+
+# Stop the service
+sudo systemctl stop stigman.service
+
+# Restart the service
+sudo systemctl restart stigman.service
+
+# View logs
+sudo journalctl -u stigman.service
+
+
+
+# Key features of this setup:
+
+Systemd Service File:
+
+Depends on Docker service
+Proper startup/shutdown ordering
+Automatic restart on failure
+Configurable timeout values
+Runs as root (needed for Docker operations)
+
+
+Start Script:
+
+Checks if container exists before starting
+Handles initial run vs restart scenarios
+Waits for services to be healthy
+Includes timeout mechanism
+Logs startup progress
+
+
+Stop Script:
+
+Graceful shutdown with 3-minute timeout
+Fallback force stop if needed
+Proper error handling
+
+
+# To set this up:
+
+Create the required directories and copy the files:
+
+bashCopy# Create directory for STIG Manager
+sudo mkdir -p /opt/stigman
+
+# Copy the scripts
+sudo cp start-stigman.sh stop-stigman.sh /opt/stigman/
+sudo chmod +x /opt/stigman/start-stigman.sh /opt/stigman/stop-stigman.sh
+
+# Copy the service file
+sudo cp stigman.service /etc/systemd/system/
+
+Enable and start the service:
+
+bashCopy# Reload systemd to recognize the new service
+sudo systemctl daemon-reload
+
+# Enable the service to start on boot
+sudo systemctl enable stigman.service
+
+# Start the service
+sudo systemctl start stigman.service
+
+Check the status:
+
+bashCopysudo systemctl status stigman.service
+
+
+
+
+# systemctl script
+[Unit]
+Description=STIG Manager Container Service
+Requires=docker.service
+After=docker.service network.target
+
+[Service]
+Type=exec
+User=root
+WorkingDirectory=/opt/stigman
+ExecStart=/opt/stigman/start-stigman.sh
+ExecStop=/opt/stigman/stop-stigman.sh
+TimeoutStartSec=0
+TimeoutStopSec=300
+Restart=on-failure
+RestartSec=30s
+
+[Install]
+WantedBy=multi-user.target
+
+
+
+# Stigmanager control script 
+
+#!/bin/bash
+# start-stigman.sh
+start_container() {
+    echo "Starting STIG Manager container..."
+    
+    # Check if container exists
+    if ! docker ps -a | grep -q stigman-container; then
+        # Initial run if container doesn't exist
+        docker run -d \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -p 54000:54000 \
+            -p 8080:8080 \
+            -p 50001:50001 \
+            -v stigman_mysql_data:/app/volumes/mysql \
+            -v stigman_keycloak_data:/app/volumes/keycloak \
+            -v stigman_api_data:/app/volumes/api \
+            --name stigman-container \
+            --restart unless-stopped \
+            stigman-wrapper-persistent
+    else
+        # Start existing container
+        docker start stigman-container
+    fi
+    
+    # Wait for container to be healthy
+    echo "Waiting for services to be ready..."
+    timeout=180
+    while [ $timeout -gt 0 ]; do
+        if docker logs stigman-container 2>&1 | grep -q "Services are ready"; then
+            echo "STIG Manager services are up and running"
+            exit 0
+        fi
+        sleep 5
+        timeout=$((timeout - 5))
+    done
+    
+    echo "Warning: Timeout waiting for services to be ready"
+    exit 1
+}
+
+start_container
+
+#!/bin/bash
+# stop-stigman.sh
+stop_container() {
+    echo "Gracefully stopping STIG Manager container..."
+    
+    # Send SIGTERM to container
+    docker stop --time=180 stigman-container
+    
+    # Check if container stopped
+    if [ $? -eq 0 ]; then
+        echo "STIG Manager container stopped successfully"
+        exit 0
+    else
+        echo "Warning: Container did not stop gracefully, forcing stop..."
+        docker stop -t 0 stigman-container
+        exit 1
+    fi
+}
+
+stop_container
